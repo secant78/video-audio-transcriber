@@ -1,0 +1,9 @@
+# Core dependencies
+openai-whisper>=20231117
+anthropic>=0.40.0
+
+# Whisper's audio backend (ffmpeg Python bindings)
+# NOTE: you also need ffmpeg installed as a system binary.
+#   Windows: winget install ffmpeg   OR   choco install ffmpeg
+#   Mac:     brew install ffmpeg
+#   Linux:   sudo apt install ffmpeg

@@ -1,10 +1,10 @@
 # Video/Audio Transcript Analyzer
 
-Transcribes recorded audio or video files and generates a comprehensive analysis report using OpenAI Whisper (local, free) and the Claude API.
+Transcribes recorded audio or video files and generates a comprehensive analysis report. Uses **faster-whisper** (local, free) for transcription and **DeepSeek V3** for AI analysis. Includes a **Gradio web UI** with per-step progress bars.
 
 ## What It Does
 
-Given any audio or video file, the program produces a structured markdown report with:
+Given any audio or video file (or an existing transcript), the program produces a structured markdown report with:
 
 1. **Full Transcript** - timestamped transcription of the entire recording
 2. **Detailed Summary** - 8-12 sentence narrative overview of the session
@@ -15,11 +15,71 @@ Given any audio or video file, the program produces a structured markdown report
 7. **Areas for Improvement** - constructive, actionable feedback with suggestions
 8. **Overall Assessment** - final evaluation and recommended priority action
 
+---
+
+## Running the Web UI
+
+```bash
+python ui.py
+```
+
+Opens **http://localhost:7860** in your browser automatically.
+
+### UI Features
+
+**Tab 1 — Upload Audio / Video**
+- Drag and drop any audio or video file
+- Select Whisper model size and language
+- Click **Transcribe & Analyze**
+- Per-step progress bars that reset between each stage:
+  - Step 1/3: MP3 conversion
+  - Step 2/3: Whisper transcription (live % per audio segment)
+  - Step 3/3: DeepSeek report generation (live token streaming)
+- Results shown in three sub-tabs: Transcript, Analysis, Full Report
+- Report auto-saved with path displayed at the bottom
+
+**Tab 2 — Analyze Existing Transcript**
+- Paste transcript text directly or upload a `.txt` file
+- Click **Analyze Transcript** — skips Whisper, goes straight to DeepSeek
+- Per-step progress bars:
+  - Step 1/2: DeepSeek report generation (live token streaming)
+  - Step 2/2: Building and saving report
+- Report auto-saved to your Downloads folder
+
+**Bitwarden Password Field**
+- Enter your Bitwarden master password in the UI — no terminal prompts needed
+- API key is fetched from your Bitwarden vault automatically at runtime
+
+---
+
+## Running from the Command Line
+
+```bash
+# Full pipeline: transcribe a media file + generate analysis
+python analyzer.py "recording.mp3"
+
+# Transcribe a video file (auto-converts to MP3 first)
+python analyzer.py "lecture.mp4"
+
+# Use a transcript you already have (skips Whisper entirely)
+python analyzer.py --transcript-file "transcript.txt"
+
+# Only transcribe, skip DeepSeek analysis
+python analyzer.py "recording.mp3" --transcript-only
+
+# Specify language (default: English)
+python analyzer.py "recording.mp3" --language es
+
+# Pass API key directly
+python analyzer.py "recording.mp3" --api-key sk-...
+```
+
+---
+
 ## Prerequisites
 
 **Python 3.8+** and **ffmpeg** must be installed.
 
-Install ffmpeg (if not already installed):
 ```bash
 # Windows
 winget install ffmpeg
@@ -32,34 +92,37 @@ sudo apt install ffmpeg
 ```
 
 Install Python dependencies:
+
 ```bash
 pip install -r requirements.txt
 ```
 
-You will also need an **Anthropic API key** from [console.anthropic.com](https://console.anthropic.com).
+You will also need a **DeepSeek API key** from [platform.deepseek.com](https://platform.deepseek.com).
 
-## Usage
+---
 
-```bash
-# Set your API key (do this once per terminal session)
-set ANTHROPIC_API_KEY=sk-ant-...        # Windows
-export ANTHROPIC_API_KEY=sk-ant-...     # Mac/Linux
+## API Key Setup (Bitwarden)
 
-# Run a full analysis
-python analyzer.py "recording.mp3"
+The app retrieves your DeepSeek API key from Bitwarden at runtime — the key is never saved to disk.
 
-# Specify a video file
-python analyzer.py "lecture.mp4"
+**Store the key in Bitwarden (one time):**
 
-# Use a more accurate Whisper model (recommended for technical content)
-python analyzer.py "recording.mp3" --model medium
+```powershell
+# Log in and unlock
+bw login
+$env:BW_SESSION=$(bw unlock --raw)
 
-# Skip Claude and only produce the transcript (no API key needed)
-python analyzer.py "recording.mp3" --transcript-only
-
-# Pass the API key inline instead of via env var
-python analyzer.py "recording.mp3" --api-key sk-ant-...
+# Save the key as a secure note
+$json = '{"type":2,"name":"DeepSeek API Key","notes":"sk-YOUR-KEY-HERE","secureNote":{"type":0},"favorite":false,"folderId":null}'
+$encoded = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($json))
+bw create item $encoded
 ```
+
+**Using the UI:** Enter your Bitwarden master password in the password field at the top of the page before clicking any button.
+
+**Using the CLI:** The app prompts for your master password in the terminal automatically.
+
+---
 
 ## Whisper Model Sizes
 
@@ -68,31 +131,46 @@ Whisper runs locally and is completely free. Larger models are slower but more a
 | Model | Download Size | Speed | Best For |
 |-------|-------------|-------|----------|
 | `tiny` | 39 MB | Fastest | Quick drafts |
-| `base` | 74 MB | Fast | Default, good balance |
+| `base` | 74 MB | Fast | Good balance |
 | `small` | 244 MB | Moderate | Better accuracy |
-| `medium` | 769 MB | Slow | Technical/dense audio (recommended) |
+| `medium` | 769 MB | Slow | Technical/dense audio (default) |
 | `large` | 1.5 GB | Slowest | Maximum accuracy |
 
-Models are downloaded automatically on first use and cached locally.
+Models are downloaded automatically on first use and cached locally. Uses **int8 quantization on CPU** for ~4x faster transcription vs standard Whisper.
+
+---
+
+## Automatic Fixes Built In
+
+| Issue | Fix Applied Automatically |
+|-------|--------------------------|
+| WebM/MP4/MOV variable bitrate | Converted to MP3 via ffmpeg before transcription |
+| CPU FP16 warning / slow inference | Detects CPU vs GPU, uses int8 on CPU and float16 on GPU |
+| Wrong language detection | Defaults to English, skips auto-detection |
+
+---
 
 ## Cost
 
-Transcription (Whisper) is always **free**. The Claude API call is the only cost.
+Transcription (faster-whisper) is always **free**. The DeepSeek V3 API call is the only cost.
 
 | Recording Length | Estimated Cost |
 |-----------------|----------------|
-| 30 minutes | ~$0.05 |
-| 1 hour | ~$0.08 |
-| 2 hours | ~$0.13 |
+| 30 minutes | ~$0.003 |
+| 1 hour | ~$0.007 |
+| 2 hours | ~$0.012 |
+
+---
 
 ## Output
 
-The report is saved as a markdown file in the same directory as the input file:
+Reports are saved as markdown files:
 
-```
-recording_analysis_20260505_143022.md
-```
+- **Media file input:** saved next to the source file as `<filename>_analysis_<timestamp>.md`
+- **Transcript input (UI):** saved to your Downloads folder as `transcript_analysis_<timestamp>.md`
+
+---
 
 ## Supported Formats
 
-Any format supported by ffmpeg: `mp3`, `mp4`, `wav`, `m4a`, `mov`, `mkv`, `webm`, `flac`, `ogg`, and more.
+Any format supported by ffmpeg: `mp3`, `mp4`, `webm`, `wav`, `m4a`, `mov`, `mkv`, `flac`, `ogg`, and more.

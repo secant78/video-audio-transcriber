@@ -57,7 +57,10 @@ def get_api_key(bw_password: str = "") -> str:
                     os.environ["DEEPSEEK_API_KEY"] = key
                     return key
 
-    # 3. Bitwarden
+    # 3. Bitwarden — only attempt if a password was explicitly provided
+    if not bw_password or not bw_password.strip():
+        return ""
+
     if not _bw_available():
         return ""
 

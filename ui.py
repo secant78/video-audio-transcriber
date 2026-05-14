@@ -113,11 +113,14 @@ def process_media(file_path, model_size, language, progress=gr.Progress()):
     analysis = analyze_streaming(transcript_text, api_key, progress, "[Step 3/3] Generating report...")
     progress(1.0, desc="[Step 3/3] Analysis complete!")
 
-    # Build & save report
-    report = build_report(media_path, transcript_text, analysis)
-    out_path = save_report(report, file_path)
+    # Build & save report to Downloads folder (Gradio temp path is not reliable)
+    stem = Path(file_path).stem
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = Path.home() / "Downloads" / f"{stem}_analysis_{ts}.md"
+    report = build_report(file_path, transcript_text, analysis)
+    out_path.write_text(report, encoding="utf-8")
 
-    return transcript_text, analysis, report, out_path
+    return transcript_text, analysis, report, str(out_path)
 
 
 def process_transcript(transcript_text, progress=gr.Progress()):
@@ -193,28 +196,28 @@ with gr.Blocks(title="Transcript Analyzer") as app:
         unlock_btn = gr.Button("Unlock Vault", variant="primary", scale=1)
 
     def unlock_vault(password):
-        """Fetch the API key from Bitwarden using the provided password."""
+        """Fetch the API key from Bitwarden and enable buttons on success."""
         if not password or not password.strip():
             return (
                 gr.update(value="Please enter your Bitwarden master password.", visible=True),
                 gr.update(visible=True),
+                gr.update(interactive=False),
+                gr.update(interactive=False),
             )
         key = get_api_key(password.strip())
         if key:
             return (
-                gr.update(value="Vault unlocked. API key loaded.", visible=True),
+                gr.update(value="Vault unlocked. Ready to go.", visible=True),
                 gr.update(visible=False),
+                gr.update(interactive=True),
+                gr.update(interactive=True),
             )
         return (
             gr.update(value="Failed to unlock vault. Check your password and try again.", visible=True),
             gr.update(visible=True),
+            gr.update(interactive=False),
+            gr.update(interactive=False),
         )
-
-    unlock_btn.click(
-        fn=unlock_vault,
-        inputs=bw_password,
-        outputs=[vault_status, vault_row],
-    )
 
     with gr.Tabs():
 
@@ -241,7 +244,7 @@ with gr.Blocks(title="Transcript Analyzer") as app:
                         max_lines=1,
                     )
 
-            run_media_btn = gr.Button("Transcribe & Analyze", variant="primary", elem_id="run-btn")
+            run_media_btn = gr.Button("Transcribe & Analyze", variant="primary", elem_id="run-btn", interactive=False)
 
             with gr.Tabs():
                 with gr.TabItem("Transcript"):
@@ -267,6 +270,7 @@ with gr.Blocks(title="Transcript Analyzer") as app:
                 fn=process_media,
                 inputs=[media_file, model_choice, language_choice],
                 outputs=[media_transcript_out, media_analysis_out, media_report_out, media_save_path],
+                api_name="transcribe_analyze",
             )
 
         # ── Tab 2: Paste existing transcript ────────────
@@ -295,7 +299,7 @@ with gr.Blocks(title="Transcript Analyzer") as app:
                 outputs=transcript_input,
             )
 
-            run_transcript_btn = gr.Button("Analyze Transcript", variant="primary", elem_id="run-btn")
+            run_transcript_btn = gr.Button("Analyze Transcript", variant="primary", elem_id="run-btn", interactive=False)
 
             with gr.Tabs():
                 with gr.TabItem("Analysis"):
@@ -316,12 +320,16 @@ with gr.Blocks(title="Transcript Analyzer") as app:
                 outputs=[transcript_analysis_out, transcript_report_out, transcript_save_path],
             )
 
+    unlock_btn.click(
+        fn=unlock_vault,
+        inputs=bw_password,
+        outputs=[vault_status, vault_row, run_media_btn, run_transcript_btn],
+    )
+
     def check_vault_on_load():
         """On startup, only check env/file — never attempt Bitwarden unlock."""
-        # Check environment variable
         key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
 
-        # Check .env file
         if not key:
             env_file = Path(__file__).parent / ".env"
             if env_file.exists():
@@ -332,15 +340,21 @@ with gr.Blocks(title="Transcript Analyzer") as app:
 
         if key:
             os.environ["DEEPSEEK_API_KEY"] = key
-            return gr.update(visible=False), gr.update(value="API key loaded.", visible=True)
+            return (
+                gr.update(visible=False),
+                gr.update(value="API key loaded. Ready to go.", visible=True),
+                gr.update(interactive=True),
+                gr.update(interactive=True),
+            )
 
-        # Key not found — show the vault unlock row
         return (
             gr.update(visible=True),
-            gr.update(value="Bitwarden password required. Enter your master password and click Unlock Vault.", visible=True),
+            gr.update(value="Enter your Bitwarden master password and click Unlock Vault.", visible=True),
+            gr.update(interactive=False),
+            gr.update(interactive=False),
         )
 
-    app.load(fn=check_vault_on_load, outputs=[vault_row, vault_status])
+    app.load(fn=check_vault_on_load, outputs=[vault_row, vault_status, run_media_btn, run_transcript_btn])
 
 if __name__ == "__main__":
     app.launch(inbrowser=True, theme=gr.themes.Soft(), css=CSS)

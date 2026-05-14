@@ -88,24 +88,18 @@ def _bw_available() -> bool:
 
 def _bw_unlock(password: str = "") -> str:
     """Unlock Bitwarden vault and return a session token.
-    If password is provided it is passed via stdin (no terminal prompt).
-    Otherwise the terminal prompt is shown as usual.
+    Requires a non-empty password — never opens an interactive terminal prompt.
     """
+    if not password or not password.strip():
+        return ""
     try:
-        if password:
-            result = subprocess.run(
-                ["bw", "unlock", "--raw", "--passwordenv", "BW_PASSWORD"],
-                env={**os.environ, "BW_PASSWORD": password},
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-        else:
-            result = subprocess.run(
-                ["bw", "unlock", "--raw"],
-                stdout=subprocess.PIPE,
-                text=True,
-            )
+        result = subprocess.run(
+            ["bw", "unlock", "--raw", "--passwordenv", "BW_PASSWORD"],
+            env={**os.environ, "BW_PASSWORD": password.strip()},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
         return result.stdout.strip() if result.returncode == 0 else ""
     except Exception:
         return ""

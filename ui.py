@@ -55,18 +55,15 @@ def analyze_streaming(transcript_text: str, api_key: str, progress, base_desc: s
 # Core processing
 # ─────────────────────────────────────────────
 
-def process_media(file_path, model_size, language, bw_password, progress=gr.Progress()):
+def process_media(file_path, model_size, language, progress=gr.Progress()):
     """Full pipeline: transcribe + analyze with per-step resetting progress bars."""
 
     if not file_path:
         raise gr.Error("Please upload a file first.")
 
-    api_key = get_api_key(bw_password or "")
+    api_key = get_api_key()
     if not api_key:
-        raise gr.Error(
-            "DeepSeek API key not found. "
-            "Store it in Bitwarden as 'DeepSeek API Key' or set DEEPSEEK_API_KEY."
-        )
+        raise gr.Error("DeepSeek API key not found. Enter your Bitwarden master password above and click Unlock Vault.")
 
     media_path = file_path
     temp_mp3 = None
@@ -123,18 +120,15 @@ def process_media(file_path, model_size, language, bw_password, progress=gr.Prog
     return transcript_text, analysis, report, out_path
 
 
-def process_transcript(transcript_text, bw_password, progress=gr.Progress()):
+def process_transcript(transcript_text, progress=gr.Progress()):
     """Analyze an existing transcript with per-step resetting progress bars."""
 
     if not transcript_text or not transcript_text.strip():
         raise gr.Error("Please paste or upload a transcript first.")
 
-    api_key = get_api_key(bw_password or "")
+    api_key = get_api_key()
     if not api_key:
-        raise gr.Error(
-            "DeepSeek API key not found. "
-            "Store it in Bitwarden as 'DeepSeek API Key' or set DEEPSEEK_API_KEY."
-        )
+        raise gr.Error("DeepSeek API key not found. Enter your Bitwarden master password above and click Unlock Vault.")
 
     # ── Step 1: DeepSeek analysis ────────────────
     progress(0.0, desc="[Step 1/2] Connecting to DeepSeek V3...")
@@ -181,13 +175,46 @@ with gr.Blocks(title="Transcript Analyzer") as app:
         elem_id="subtitle",
     )
 
-    with gr.Row():
+    # ── Vault unlock row ────────────────────────
+    vault_status = gr.Textbox(
+        value="",
+        label="Vault Status",
+        interactive=False,
+        visible=False,
+    )
+
+    with gr.Row(visible=False) as vault_row:
         bw_password = gr.Textbox(
             label="Bitwarden Master Password",
             type="password",
-            placeholder="Enter only if prompted for API key...",
-            scale=1,
+            placeholder="Enter your Bitwarden master password...",
+            scale=3,
         )
+        unlock_btn = gr.Button("Unlock Vault", variant="primary", scale=1)
+
+    def unlock_vault(password):
+        """Fetch the API key from Bitwarden using the provided password."""
+        if not password or not password.strip():
+            return (
+                gr.update(value="Please enter your Bitwarden master password.", visible=True),
+                gr.update(visible=True),
+            )
+        key = get_api_key(password.strip())
+        if key:
+            return (
+                gr.update(value="Vault unlocked. API key loaded.", visible=True),
+                gr.update(visible=False),
+            )
+        return (
+            gr.update(value="Failed to unlock vault. Check your password and try again.", visible=True),
+            gr.update(visible=True),
+        )
+
+    unlock_btn.click(
+        fn=unlock_vault,
+        inputs=bw_password,
+        outputs=[vault_status, vault_row],
+    )
 
     with gr.Tabs():
 
@@ -238,7 +265,7 @@ with gr.Blocks(title="Transcript Analyzer") as app:
 
             run_media_btn.click(
                 fn=process_media,
-                inputs=[media_file, model_choice, language_choice, bw_password],
+                inputs=[media_file, model_choice, language_choice],
                 outputs=[media_transcript_out, media_analysis_out, media_report_out, media_save_path],
             )
 
@@ -285,9 +312,35 @@ with gr.Blocks(title="Transcript Analyzer") as app:
 
             run_transcript_btn.click(
                 fn=process_transcript,
-                inputs=[transcript_input, bw_password],
+                inputs=transcript_input,
                 outputs=[transcript_analysis_out, transcript_report_out, transcript_save_path],
             )
+
+    def check_vault_on_load():
+        """On startup, only check env/file — never attempt Bitwarden unlock."""
+        # Check environment variable
+        key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+
+        # Check .env file
+        if not key:
+            env_file = Path(__file__).parent / ".env"
+            if env_file.exists():
+                for line in env_file.read_text(encoding="utf-8").splitlines():
+                    if line.strip().startswith("DEEPSEEK_API_KEY="):
+                        key = line.split("=", 1)[1].strip()
+                        break
+
+        if key:
+            os.environ["DEEPSEEK_API_KEY"] = key
+            return gr.update(visible=False), gr.update(value="API key loaded.", visible=True)
+
+        # Key not found — show the vault unlock row
+        return (
+            gr.update(visible=True),
+            gr.update(value="Bitwarden password required. Enter your master password and click Unlock Vault.", visible=True),
+        )
+
+    app.load(fn=check_vault_on_load, outputs=[vault_row, vault_status])
 
 if __name__ == "__main__":
     app.launch(inbrowser=True, theme=gr.themes.Soft(), css=CSS)

@@ -23,6 +23,8 @@ from analyzer import (
     get_api_key,
     build_report,
     save_report,
+    build_timestamped_transcript,
+    transcribe_with_groq,
     ANALYSIS_PROMPT,
     _fmt_time,
 )
@@ -101,7 +103,7 @@ def analyze_streaming(transcript_text: str, api_key: str, progress, base_desc: s
 # Core processing
 # ─────────────────────────────────────────────
 
-def process_media(file_path, model_size, language, progress=gr.Progress()):
+def process_media(file_path, transcription_method, groq_api_key, model_size, language, progress=gr.Progress()):
     """Full pipeline: transcribe + analyze with per-step resetting progress bars."""
 
     if not file_path:
@@ -112,52 +114,72 @@ def process_media(file_path, model_size, language, progress=gr.Progress()):
         raise gr.Error("DeepSeek API key not found. Enter your Bitwarden master password above and click Unlock Vault.")
 
     media_path = file_path
-    temp_mp3 = None
 
-    # ── Step 1: Convert to MP3 ───────────────────
-    ext = Path(media_path).suffix.lower()
-    if ext in (".webm", ".mkv", ".mov", ".mp4"):
-        progress(0.0, desc="[Step 1/3] Starting MP3 conversion...")
-        out_mp3 = Path(tempfile.mktemp(suffix=".mp3"))
-        success = convert_with_progress(media_path, out_mp3, progress, "[Step 1/3] Converting...")
-        if success and out_mp3.exists():
-            temp_mp3 = str(out_mp3)
-            media_path = temp_mp3
-        progress(1.0, desc="[Step 1/3] Conversion complete!")
-        progress(0.0, desc="")   # reset for next step
+    # ── Groq path ─────────────────────────────────
+    if transcription_method == "Groq (Cloud - Fast, Free)":
+        if not groq_api_key or not groq_api_key.strip():
+            raise gr.Error("Groq API key required. Get one free at console.groq.com.")
 
-    # ── Step 2: Transcribe ───────────────────────
-    progress(0.0, desc=f"[Step 2/3] Loading Whisper '{model_size}' model...")
-    device, compute_type = get_device()
-    model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        progress(0.0, desc="[Step 1/2] Starting Groq transcription...")
 
-    progress(0.02, desc="[Step 2/3] Transcribing audio...")
-    segments_gen, info = model.transcribe(media_path, language=language, beam_size=5)
+        def groq_progress(pct, desc):
+            progress(pct, desc=f"[Step 1/2] {desc}")
 
-    segments = []
-    transcript_lines = []
-    total_duration = info.duration if info.duration else 1
-
-    for seg in segments_gen:
-        segments.append({"start": seg.start, "end": seg.end, "text": seg.text.strip()})
-        transcript_lines.append(
-            f"[{_fmt_time(seg.start)} -> {_fmt_time(seg.end)}]  {seg.text.strip()}"
+        result = transcribe_with_groq(
+            media_path, groq_api_key.strip(), language, groq_progress
         )
-        pct = seg.end / total_duration
-        progress(pct, desc=f"[Step 2/3] Transcribing... {pct:.0%} complete")
+        transcript_text = build_timestamped_transcript(result)
+        progress(1.0, desc="[Step 1/2] Transcription complete!")
+        progress(0.0, desc="")
 
-    transcript_text = "\n".join(transcript_lines)
+        progress(0.0, desc="[Step 2/2] Connecting to DeepSeek V3...")
+        analysis = analyze_streaming(transcript_text, api_key, progress, "[Step 2/2] Generating report...")
+        progress(1.0, desc="[Step 2/2] Analysis complete!")
 
-    if temp_mp3 and Path(temp_mp3).exists():
-        Path(temp_mp3).unlink()
+    # ── Local Whisper path ───────────────────────
+    else:
+        temp_mp3 = None
+        ext = Path(media_path).suffix.lower()
+        if ext in (".webm", ".mkv", ".mov", ".mp4"):
+            progress(0.0, desc="[Step 1/3] Starting MP3 conversion...")
+            out_mp3 = Path(tempfile.mktemp(suffix=".mp3"))
+            success = convert_with_progress(media_path, out_mp3, progress, "[Step 1/3] Converting...")
+            if success and out_mp3.exists():
+                temp_mp3 = str(out_mp3)
+                media_path = temp_mp3
+            progress(1.0, desc="[Step 1/3] Conversion complete!")
+            progress(0.0, desc="")
 
-    progress(1.0, desc="[Step 2/3] Transcription complete!")
-    progress(0.0, desc="")   # reset for next step
+        progress(0.0, desc=f"[Step 2/3] Loading Whisper '{model_size}' model...")
+        device, compute_type = get_device()
+        model = WhisperModel(model_size, device=device, compute_type=compute_type)
 
-    # ── Step 3: DeepSeek analysis ────────────────
-    progress(0.0, desc="[Step 3/3] Connecting to DeepSeek V3...")
-    analysis = analyze_streaming(transcript_text, api_key, progress, "[Step 3/3] Generating report...")
-    progress(1.0, desc="[Step 3/3] Analysis complete!")
+        progress(0.02, desc="[Step 2/3] Transcribing audio...")
+        segments_gen, info = model.transcribe(media_path, language=language, beam_size=5)
+
+        segments = []
+        transcript_lines = []
+        total_duration = info.duration if info.duration else 1
+
+        for seg in segments_gen:
+            segments.append({"start": seg.start, "end": seg.end, "text": seg.text.strip()})
+            transcript_lines.append(
+                f"[{_fmt_time(seg.start)} -> {_fmt_time(seg.end)}]  {seg.text.strip()}"
+            )
+            pct = seg.end / total_duration
+            progress(pct, desc=f"[Step 2/3] Transcribing... {pct:.0%} complete")
+
+        transcript_text = "\n".join(transcript_lines)
+
+        if temp_mp3 and Path(temp_mp3).exists():
+            Path(temp_mp3).unlink()
+
+        progress(1.0, desc="[Step 2/3] Transcription complete!")
+        progress(0.0, desc="")
+
+        progress(0.0, desc="[Step 3/3] Connecting to DeepSeek V3...")
+        analysis = analyze_streaming(transcript_text, api_key, progress, "[Step 3/3] Generating report...")
+        progress(1.0, desc="[Step 3/3] Analysis complete!")
 
     # Build & save report to Downloads folder (Gradio temp path is not reliable)
     stem = Path(file_path).stem
@@ -297,11 +319,23 @@ with gr.Blocks(title="Transcript Analyzer") as app:
                         file_types=["audio", "video"],
                     )
                 with gr.Column(scale=1):
+                    transcription_method = gr.Radio(
+                        choices=["Local Whisper (CPU)", "Groq (Cloud - Fast, Free)"],
+                        value="Groq (Cloud - Fast, Free)",
+                        label="Transcription Method",
+                    )
+                    groq_api_key_input = gr.Textbox(
+                        label="Groq API Key",
+                        type="password",
+                        placeholder="Get free key at console.groq.com",
+                        visible=True,
+                    )
                     model_choice = gr.Dropdown(
                         choices=["tiny", "base", "small", "medium", "large"],
                         value="medium",
-                        label="Whisper Model",
-                        info="medium = best balance of speed and accuracy",
+                        label="Whisper Model (Local only)",
+                        info="Only used when Local Whisper is selected",
+                        visible=False,
                     )
                     language_choice = gr.Textbox(
                         value="en",
@@ -309,6 +343,16 @@ with gr.Blocks(title="Transcript Analyzer") as app:
                         info="en, es, fr, de, etc.",
                         max_lines=1,
                     )
+
+            def toggle_method(method):
+                is_groq = method == "Groq (Cloud - Fast, Free)"
+                return gr.update(visible=is_groq), gr.update(visible=not is_groq)
+
+            transcription_method.change(
+                fn=toggle_method,
+                inputs=transcription_method,
+                outputs=[groq_api_key_input, model_choice],
+            )
 
             run_media_btn = gr.Button("Transcribe & Analyze", variant="primary", elem_id="run-btn")
 
@@ -334,9 +378,8 @@ with gr.Blocks(title="Transcript Analyzer") as app:
 
             run_media_btn.click(
                 fn=process_media,
-                inputs=[media_file, model_choice, language_choice],
+                inputs=[media_file, transcription_method, groq_api_key_input, model_choice, language_choice],
                 outputs=[media_transcript_out, media_analysis_out, media_report_out, media_save_path],
-                api_name="transcribe_analyze",
             )
 
         # ── Tab 2: Extract audio only ────────────────────
@@ -449,4 +492,5 @@ with gr.Blocks(title="Transcript Analyzer") as app:
     app.load(fn=check_vault_on_load, outputs=[vault_row, vault_status])
 
 if __name__ == "__main__":
+    app.queue()
     app.launch(inbrowser=True, theme=gr.themes.Soft(), css=CSS)

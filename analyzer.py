@@ -121,7 +121,131 @@ def _bw_get_notes(item_name: str, session: str) -> str:
 
 
 # ─────────────────────────────────────────────
-# Transcription
+# Groq transcription (cloud, fast, free tier)
+# ─────────────────────────────────────────────
+
+# At 128kbps MP3: 25 MB = ~1600 seconds. Use 1440s (24 min) per chunk to stay safely under.
+GROQ_CHUNK_DURATION = 1440
+GROQ_MODEL = "whisper-large-v3"
+
+
+def get_audio_duration(path: str) -> float:
+    """Return duration in seconds using ffmpeg."""
+    import re
+    result = subprocess.run(
+        ["ffmpeg", "-i", path],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", result.stderr)
+    if match:
+        h, m, s = match.groups()
+        return int(h) * 3600 + int(m) * 60 + float(s)
+    return 0.0
+
+
+def split_audio(mp3_path: str, chunk_duration: int, tmp_dir: Path) -> list:
+    """Split an MP3 into fixed-duration chunks. Returns list of chunk paths."""
+    chunk_pattern = str(tmp_dir / "chunk_%03d.mp3")
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", mp3_path,
+            "-f", "segment",
+            "-segment_time", str(chunk_duration),
+            "-c", "copy",
+            "-reset_timestamps", "1",
+            chunk_pattern,
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=True,
+    )
+    return sorted(tmp_dir.glob("chunk_*.mp3"))
+
+
+def transcribe_with_groq(
+    media_path: str,
+    groq_api_key: str,
+    language: str = "en",
+    progress_callback=None,
+) -> dict:
+    """
+    Convert media to MP3, split into 25 MB chunks, transcribe each with
+    Groq whisper-large-v3, and combine into a single timestamped transcript.
+    """
+    from groq import Groq
+
+    client = Groq(api_key=groq_api_key)
+    tmp_dir = Path(tempfile.mkdtemp())
+
+    def _progress(pct, desc):
+        if progress_callback:
+            progress_callback(pct, desc)
+
+    try:
+        # Step A — Convert to MP3
+        _progress(0.0, "Converting to MP3...")
+        mp3_path = tmp_dir / "audio.mp3"
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", media_path, "-vn", "-ab", "128k", str(mp3_path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if result.returncode != 0 or not mp3_path.exists():
+            raise RuntimeError("ffmpeg conversion failed.")
+        _progress(0.1, "Conversion complete. Splitting into chunks...")
+
+        # Step B — Split
+        total_duration = get_audio_duration(str(mp3_path))
+        chunks = split_audio(str(mp3_path), GROQ_CHUNK_DURATION, tmp_dir)
+        n = len(chunks)
+        print(f"      Split into {n} chunk(s) of up to {GROQ_CHUNK_DURATION}s each.")
+        _progress(0.15, f"Split into {n} chunk(s). Starting transcription...")
+
+        # Step C — Transcribe each chunk
+        all_segments = []
+        time_offset = 0.0
+
+        for i, chunk_path in enumerate(chunks):
+            chunk_label = f"[Chunk {i + 1}/{n}]"
+            pct = 0.15 + (i / n) * 0.75
+            _progress(pct, f"Transcribing {chunk_label}...")
+            print(f"      Transcribing {chunk_label}: {chunk_path.name}")
+
+            with open(chunk_path, "rb") as f:
+                response = client.audio.transcriptions.create(
+                    file=(chunk_path.name, f.read()),
+                    model=GROQ_MODEL,
+                    language=language,
+                    response_format="verbose_json",
+                    timestamp_granularities=["segment"],
+                )
+
+            chunk_duration = get_audio_duration(str(chunk_path))
+
+            for seg in response.segments:
+                all_segments.append({
+                    "start": seg.start + time_offset,
+                    "end":   seg.end + time_offset,
+                    "text":  seg.text.strip(),
+                })
+
+            time_offset += chunk_duration
+
+        _progress(0.95, "Combining transcripts...")
+        print(f"      Done — {len(all_segments)} total segments across {n} chunk(s).")
+
+        return {"segments": all_segments, "language": language}
+
+    finally:
+        # Clean up all temp files
+        import shutil
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# ─────────────────────────────────────────────
+# Local Whisper transcription
 # ─────────────────────────────────────────────
 
 def convert_to_mp3(media_path: str) -> str:

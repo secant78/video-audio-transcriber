@@ -25,7 +25,6 @@ from pathlib import Path
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 warnings.filterwarnings("ignore", category=UserWarning, module="huggingface_hub")
 
-import torch
 from faster_whisper import WhisperModel
 from openai import OpenAI
 
@@ -143,12 +142,15 @@ def convert_to_mp3(media_path: str) -> str:
 
 def get_device() -> tuple:
     """Detect GPU availability and return (device, compute_type)."""
-    if torch.cuda.is_available():
-        print("      GPU detected - using CUDA (float16)")
-        return "cuda", "float16"
-    else:
-        print("      No GPU detected - using CPU (int8, optimized)")
-        return "cpu", "int8"
+    try:
+        import torch
+        if torch.cuda.is_available():
+            print("      GPU detected - using CUDA (float16)")
+            return "cuda", "float16"
+    except Exception:
+        pass
+    print("      No GPU detected - using CPU (int8, optimized)")
+    return "cpu", "int8"
 
 
 def transcribe(media_path: str, model_size: str = "medium", language: str = "en") -> dict:

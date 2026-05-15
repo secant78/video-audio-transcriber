@@ -7,12 +7,13 @@ Then open http://localhost:7860 in your browser.
 """
 
 import os
+import re
 import tempfile
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
 import gradio as gr
-import torch
 from faster_whisper import WhisperModel
 from openai import OpenAI
 
@@ -25,6 +26,51 @@ from analyzer import (
     ANALYSIS_PROMPT,
     _fmt_time,
 )
+
+
+def get_media_duration(media_path: str) -> float:
+    """Return duration in seconds using ffmpeg."""
+    import re
+    result = subprocess.run(
+        ["ffmpeg", "-i", media_path],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", result.stderr)
+    if match:
+        h, m, s = match.groups()
+        return int(h) * 3600 + int(m) * 60 + float(s)
+    return 0.0
+
+
+def convert_with_progress(media_path: str, output_path: str, progress, label: str) -> bool:
+    """Run ffmpeg and stream real-time progress updates."""
+    duration = get_media_duration(media_path)
+
+    proc = subprocess.Popen(
+        [
+            "ffmpeg", "-y", "-i", media_path, "-vn", "-ab", "128k",
+            str(output_path), "-progress", "pipe:1", "-nostats",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+
+    for line in proc.stdout:
+        line = line.strip()
+        if line.startswith("out_time_ms="):
+            try:
+                ms = int(line.split("=")[1])
+                elapsed = ms / 1_000_000
+                pct = min(elapsed / duration, 0.99) if duration else 0.5
+                progress(pct, desc=f"{label} {int(pct * 100)}%")
+            except ValueError:
+                pass
+
+    proc.wait()
+    return proc.returncode == 0
 
 
 def analyze_streaming(transcript_text: str, api_key: str, progress, base_desc: str) -> str:
@@ -72,11 +118,11 @@ def process_media(file_path, model_size, language, progress=gr.Progress()):
     ext = Path(media_path).suffix.lower()
     if ext in (".webm", ".mkv", ".mov", ".mp4"):
         progress(0.0, desc="[Step 1/3] Starting MP3 conversion...")
-        progress(0.4, desc="[Step 1/3] Converting video to audio...")
-        converted = convert_to_mp3(media_path)
-        if converted != media_path:
-            temp_mp3 = converted
-            media_path = converted
+        out_mp3 = Path(tempfile.mktemp(suffix=".mp3"))
+        success = convert_with_progress(media_path, out_mp3, progress, "[Step 1/3] Converting...")
+        if success and out_mp3.exists():
+            temp_mp3 = str(out_mp3)
+            media_path = temp_mp3
         progress(1.0, desc="[Step 1/3] Conversion complete!")
         progress(0.0, desc="")   # reset for next step
 
@@ -121,6 +167,32 @@ def process_media(file_path, model_size, language, progress=gr.Progress()):
     out_path.write_text(report, encoding="utf-8")
 
     return transcript_text, analysis, report, str(out_path)
+
+
+def extract_audio_only(file_path, output_format, progress=gr.Progress()):
+    """Extract audio from a video file and save to Downloads."""
+    if not file_path:
+        raise gr.Error("Please upload a video file first.")
+
+    progress(0.0, desc="Starting audio extraction...")
+    src = Path(file_path)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = Path.home() / "Downloads" / f"{src.stem}_audio_{ts}.{output_format}"
+
+    progress(0.3, desc=f"Extracting audio as {output_format.upper()}...")
+
+    extra = ["-ab", "128k"] if output_format == "mp3" else []
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-i", file_path, "-vn"] + extra + [str(out_path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    if result.returncode != 0:
+        raise gr.Error("Audio extraction failed. Make sure the file is a valid video.")
+
+    progress(1.0, desc="Extraction complete!")
+    return str(out_path), gr.update(value=str(out_path), visible=True)
 
 
 def process_transcript(transcript_text, progress=gr.Progress()):
@@ -196,27 +268,21 @@ with gr.Blocks(title="Transcript Analyzer") as app:
         unlock_btn = gr.Button("Unlock Vault", variant="primary", scale=1)
 
     def unlock_vault(password):
-        """Fetch the API key from Bitwarden and enable buttons on success."""
+        """Fetch the API key from Bitwarden and hide the vault row on success."""
         if not password or not password.strip():
             return (
                 gr.update(value="Please enter your Bitwarden master password.", visible=True),
                 gr.update(visible=True),
-                gr.update(interactive=False),
-                gr.update(interactive=False),
             )
         key = get_api_key(password.strip())
         if key:
             return (
                 gr.update(value="Vault unlocked. Ready to go.", visible=True),
                 gr.update(visible=False),
-                gr.update(interactive=True),
-                gr.update(interactive=True),
             )
         return (
-            gr.update(value="Failed to unlock vault. Check your password and try again.", visible=True),
+            gr.update(value="Wrong password or vault locked. Try again.", visible=True),
             gr.update(visible=True),
-            gr.update(interactive=False),
-            gr.update(interactive=False),
         )
 
     with gr.Tabs():
@@ -244,7 +310,7 @@ with gr.Blocks(title="Transcript Analyzer") as app:
                         max_lines=1,
                     )
 
-            run_media_btn = gr.Button("Transcribe & Analyze", variant="primary", elem_id="run-btn", interactive=False)
+            run_media_btn = gr.Button("Transcribe & Analyze", variant="primary", elem_id="run-btn")
 
             with gr.Tabs():
                 with gr.TabItem("Transcript"):
@@ -273,7 +339,33 @@ with gr.Blocks(title="Transcript Analyzer") as app:
                 api_name="transcribe_analyze",
             )
 
-        # ── Tab 2: Paste existing transcript ────────────
+        # ── Tab 2: Extract audio only ────────────────────
+        with gr.TabItem("Extract Audio from Video"):
+
+            with gr.Row():
+                with gr.Column(scale=2):
+                    audio_video_file = gr.File(
+                        label="Drop or click to upload a video (mp4, webm, mov, mkv...)",
+                        file_types=["video"],
+                    )
+                with gr.Column(scale=1):
+                    audio_format = gr.Dropdown(
+                        choices=["mp3", "wav", "m4a", "flac"],
+                        value="mp3",
+                        label="Output Format",
+                        info="mp3 = smallest file size, wav = highest quality",
+                    )
+
+            extract_btn = gr.Button("Extract Audio", variant="primary")
+            audio_save_path = gr.Textbox(label="Audio saved to", interactive=False, visible=False)
+
+            extract_btn.click(
+                fn=extract_audio_only,
+                inputs=[audio_video_file, audio_format],
+                outputs=[audio_save_path, audio_save_path],
+            )
+
+        # ── Tab 3: Paste existing transcript ─────────────
         with gr.TabItem("Analyze Existing Transcript"):
 
             with gr.Row():
@@ -299,7 +391,7 @@ with gr.Blocks(title="Transcript Analyzer") as app:
                 outputs=transcript_input,
             )
 
-            run_transcript_btn = gr.Button("Analyze Transcript", variant="primary", elem_id="run-btn", interactive=False)
+            run_transcript_btn = gr.Button("Analyze Transcript", variant="primary", elem_id="run-btn")
 
             with gr.Tabs():
                 with gr.TabItem("Analysis"):
@@ -321,9 +413,13 @@ with gr.Blocks(title="Transcript Analyzer") as app:
             )
 
     unlock_btn.click(
+        fn=lambda: gr.update(value="Connecting to Bitwarden vault...", visible=True),
+        inputs=None,
+        outputs=vault_status,
+    ).then(
         fn=unlock_vault,
         inputs=bw_password,
-        outputs=[vault_status, vault_row, run_media_btn, run_transcript_btn],
+        outputs=[vault_status, vault_row],
     )
 
     def check_vault_on_load():
@@ -343,18 +439,14 @@ with gr.Blocks(title="Transcript Analyzer") as app:
             return (
                 gr.update(visible=False),
                 gr.update(value="API key loaded. Ready to go.", visible=True),
-                gr.update(interactive=True),
-                gr.update(interactive=True),
             )
 
         return (
             gr.update(visible=True),
             gr.update(value="Enter your Bitwarden master password and click Unlock Vault.", visible=True),
-            gr.update(interactive=False),
-            gr.update(interactive=False),
         )
 
-    app.load(fn=check_vault_on_load, outputs=[vault_row, vault_status, run_media_btn, run_transcript_btn])
+    app.load(fn=check_vault_on_load, outputs=[vault_row, vault_status])
 
 if __name__ == "__main__":
     app.launch(inbrowser=True, theme=gr.themes.Soft(), css=CSS)

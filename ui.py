@@ -296,20 +296,16 @@ with gr.Blocks(title="Transcript Analyzer") as app:
             return (
                 gr.update(value="Please enter your Bitwarden master password.", visible=True),
                 gr.update(visible=True),
-                gr.update(),
             )
         key = get_api_key(password.strip())
-        groq_key = os.environ.get("GROQ_API_KEY", "")
         if key:
             return (
                 gr.update(value="Vault unlocked. Ready to go.", visible=True),
                 gr.update(visible=False),
-                gr.update(value=groq_key),
             )
         return (
             gr.update(value="Wrong password or vault locked. Try again.", visible=True),
             gr.update(visible=True),
-            gr.update(),
         )
 
     with gr.Tabs():
@@ -461,7 +457,7 @@ with gr.Blocks(title="Transcript Analyzer") as app:
     ).then(
         fn=unlock_vault,
         inputs=bw_password,
-        outputs=[vault_status, vault_row, groq_api_key_input],
+        outputs=[vault_status, vault_row],
     )
 
     def check_vault_on_load():

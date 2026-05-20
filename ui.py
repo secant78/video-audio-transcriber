@@ -377,7 +377,7 @@ with gr.Blocks(title="Transcript Analyzer") as app:
 
             run_media_btn.click(
                 fn=process_media,
-                inputs=[media_file, transcription_method, groq_api_key_input, model_choice, language_choice],
+                inputs=[media_file, transcription_method, model_choice, language_choice],
                 outputs=[media_transcript_out, media_analysis_out, media_report_out, media_save_path],
             )
 

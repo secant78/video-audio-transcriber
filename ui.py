@@ -28,8 +28,7 @@ from analyzer import (
     ANALYSIS_PROMPT,
     _fmt_time,
     _bw_available,
-    _bw_unlock,
-    _bw_get_notes,
+    _bw_fetch_all_keys,
 )
 
 
@@ -306,36 +305,20 @@ with gr.Blocks(title="Transcript Analyzer") as app:
                 gr.update(visible=True),
             )
 
-        # Step 1: unlock vault
-        print("Unlocking vault...")
-        session = _bw_unlock(password.strip())
+        # Run unlock + sync + fetch all in one PowerShell process (avoids Windows session isolation)
+        print("Unlocking vault and fetching keys (this takes ~20s)...")
+        keys = _bw_fetch_all_keys(password.strip())
+
+        session      = keys.get("session", "")
+        deepseek_key = keys.get("deepseek", "")
+        groq_key     = keys.get("groq", "")
+
         if not session:
             return (
                 gr.update(value="Unlock failed — wrong password or timed out. Check the terminal.", visible=True),
                 gr.update(visible=True),
             )
         print(f"      Session obtained (length {len(session)}).")
-
-        # Step 2: sync so local cache is up to date
-        print("      Syncing vault...")
-        os.environ["BW_SESSION"] = session
-        try:
-            result = subprocess.run(
-                ["bw", "sync", "--nointeraction"],
-                capture_output=True, text=True, timeout=30,
-            )
-            if result.returncode != 0:
-                print(f"      Sync warning: {result.stderr.strip()[:200]}")
-            else:
-                print("      Sync complete.")
-        except Exception as e:
-            print(f"      Sync skipped: {e}")
-
-        # Step 3: fetch keys using the session directly
-        print("      Fetching DeepSeek API key...")
-        deepseek_key = _bw_get_notes("DeepSeek API Key", session)
-        print("      Fetching Groq API key...")
-        groq_key = _bw_get_notes("Groq API Key", session)
 
         # Store in environment for the rest of the session
         if deepseek_key:

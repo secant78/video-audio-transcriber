@@ -135,10 +135,7 @@ def _bw_session_valid(session: str) -> bool:
 
 
 def _bw_unlock(password: str = "") -> str:
-    """Unlock Bitwarden vault and return a session token.
-    Uses --offline so it never syncs with the server (much faster).
-    Requires a non-empty password — never opens an interactive terminal prompt.
-    """
+    """Unlock Bitwarden vault and return a session token."""
     if not password or not password.strip():
         return ""
     try:
@@ -159,6 +156,52 @@ def _bw_unlock(password: str = "") -> str:
         return ""
     except Exception:
         return ""
+
+
+def _bw_fetch_all_keys(password: str) -> dict:
+    """
+    Unlock vault and fetch all keys in a single PowerShell process.
+    Returns dict with 'deepseek' and 'groq' keys.
+    On Windows, separate bw processes don't share session state reliably,
+    so we run unlock + sync + get all in one shell invocation.
+    """
+    pw = password.strip().replace('"', '`"')  # escape quotes for PS
+    ps_script = (
+        f'$env:BW_PASSWORD = "{pw}"; '
+        f'$s = $(bw unlock --raw --passwordenv BW_PASSWORD --nointeraction); '
+        f'if (-not $s) {{ exit 1 }}; '
+        f'bw sync --session $s --nointeraction | Out-Null; '
+        f'$dk = $(bw get notes "DeepSeek API Key" --session $s --nointeraction); '
+        f'$gk = $(bw get notes "Groq API Key" --session $s --nointeraction); '
+        f'Write-Output "SESSION:$s"; '
+        f'Write-Output "DEEPSEEK:$dk"; '
+        f'Write-Output "GROQ:$gk"'
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        out = result.stdout
+        keys = {"session": "", "deepseek": "", "groq": ""}
+        for line in out.splitlines():
+            if line.startswith("SESSION:"):
+                keys["session"] = line[len("SESSION:"):].strip()
+            elif line.startswith("DEEPSEEK:"):
+                keys["deepseek"] = line[len("DEEPSEEK:"):].strip()
+            elif line.startswith("GROQ:"):
+                keys["groq"] = line[len("GROQ:"):].strip()
+        if result.returncode != 0 and not keys["session"]:
+            print(f"      PowerShell bw fetch failed: {result.stderr.strip()[:300]}")
+        return keys
+    except subprocess.TimeoutExpired:
+        print("      Bitwarden PowerShell fetch timed out after 120s.")
+        return {"session": "", "deepseek": "", "groq": ""}
+    except Exception as e:
+        print(f"      Bitwarden PowerShell fetch exception: {e}")
+        return {"session": "", "deepseek": "", "groq": ""}
 
 
 def _bw_get_notes(item_name: str, session: str) -> str:

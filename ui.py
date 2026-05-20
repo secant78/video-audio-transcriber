@@ -103,7 +103,7 @@ def analyze_streaming(transcript_text: str, api_key: str, progress, base_desc: s
 # Core processing
 # ─────────────────────────────────────────────
 
-def process_media(file_path, transcription_method, groq_api_key, model_size, language, progress=gr.Progress()):
+def process_media(file_path, transcription_method, model_size, language, progress=gr.Progress()):
     """Full pipeline: transcribe + analyze with per-step resetting progress bars."""
 
     if not file_path:
@@ -117,8 +117,9 @@ def process_media(file_path, transcription_method, groq_api_key, model_size, lan
 
     # ── Groq path ─────────────────────────────────
     if transcription_method == "Groq (Cloud - Fast, Free)":
-        if not groq_api_key or not groq_api_key.strip():
-            raise gr.Error("Groq API key required. Get one free at console.groq.com.")
+        groq_api_key = os.environ.get("GROQ_API_KEY", "").strip()
+        if not groq_api_key:
+            raise gr.Error("Groq API key not found. Unlock your Bitwarden vault first.")
 
         progress(0.0, desc="[Step 1/2] Starting Groq transcription...")
 
@@ -328,12 +329,6 @@ with gr.Blocks(title="Transcript Analyzer") as app:
                         value="Groq (Cloud - Fast, Free)",
                         label="Transcription Method",
                     )
-                    groq_api_key_input = gr.Textbox(
-                        label="Groq API Key",
-                        type="password",
-                        placeholder="Get free key at console.groq.com",
-                        visible=True,
-                    )
                     model_choice = gr.Dropdown(
                         choices=["tiny", "base", "small", "medium", "large"],
                         value="medium",
@@ -349,13 +344,13 @@ with gr.Blocks(title="Transcript Analyzer") as app:
                     )
 
             def toggle_method(method):
-                is_groq = method == "Groq (Cloud - Fast, Free)"
-                return gr.update(visible=is_groq), gr.update(visible=not is_groq)
+                is_local = method == "Local Whisper (CPU)"
+                return gr.update(visible=is_local)
 
             transcription_method.change(
                 fn=toggle_method,
                 inputs=transcription_method,
-                outputs=[groq_api_key_input, model_choice],
+                outputs=model_choice,
             )
 
             run_media_btn = gr.Button("Transcribe & Analyze", variant="primary", elem_id="run-btn")

@@ -318,11 +318,10 @@ with gr.Blocks(title="Transcript Analyzer") as app:
 
         # Step 2: sync so local cache is up to date
         print("      Syncing vault...")
+        os.environ["BW_SESSION"] = session
         try:
-            import subprocess
             result = subprocess.run(
                 ["bw", "sync", "--nointeraction"],
-                env={**os.environ, "BW_SESSION": session},
                 capture_output=True, text=True, timeout=30,
             )
             if result.returncode != 0:

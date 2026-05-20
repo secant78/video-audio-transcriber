@@ -116,13 +116,18 @@ def _bw_session_valid(session: str) -> bool:
     if not session:
         return False
     try:
+        old = os.environ.get("BW_SESSION")
+        os.environ["BW_SESSION"] = session
         result = subprocess.run(
             ["bw", "status", "--nointeraction"],
-            env={**os.environ, "BW_SESSION": session},
             capture_output=True,
             text=True,
             timeout=10,
         )
+        if old is None:
+            os.environ.pop("BW_SESSION", None)
+        else:
+            os.environ["BW_SESSION"] = old
         # Handle both compact and spaced JSON: "status":"unlocked" or "status": "unlocked"
         return result.returncode == 0 and "unlocked" in result.stdout
     except Exception:
@@ -158,10 +163,12 @@ def _bw_unlock(password: str = "") -> str:
 
 def _bw_get_notes(item_name: str, session: str) -> str:
     """Retrieve the notes field of a Bitwarden item."""
+    # Set BW_SESSION in the parent process env so the child inherits it correctly on Windows
+    old_session = os.environ.get("BW_SESSION")
+    os.environ["BW_SESSION"] = session
     try:
         result = subprocess.run(
-            ["bw", "get", "notes", item_name, "--nointeraction"],
-            env={**os.environ, "BW_SESSION": session},
+            ["bw", "get", "notes", item_name, "--session", session, "--nointeraction"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -175,6 +182,12 @@ def _bw_get_notes(item_name: str, session: str) -> str:
     except Exception as e:
         print(f"      Bitwarden get '{item_name}' exception: {e}")
         return ""
+    finally:
+        # Restore original session value
+        if old_session is None:
+            os.environ.pop("BW_SESSION", None)
+        else:
+            os.environ["BW_SESSION"] = old_session
 
 
 # ─────────────────────────────────────────────

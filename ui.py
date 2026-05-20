@@ -292,19 +292,45 @@ with gr.Blocks(title="Transcript Analyzer") as app:
 
     def unlock_vault(password):
         """Fetch all API keys from Bitwarden and populate fields."""
+        from analyzer import _bw_available, _bw_session_valid, _bw_unlock
         if not password or not password.strip():
             return (
                 gr.update(value="Please enter your Bitwarden master password.", visible=True),
                 gr.update(visible=True),
             )
+        # Check if bw CLI is present
+        if not _bw_available():
+            return (
+                gr.update(value="Bitwarden CLI not found. Install it or set DEEPSEEK_API_KEY directly.", visible=True),
+                gr.update(visible=True),
+            )
+        # Try unlock (takes ~18s due to key derivation)
+        session = _bw_unlock(password.strip())
+        if not session:
+            return (
+                gr.update(value="Unlock failed — wrong password or vault timed out. Check the terminal for details.", visible=True),
+                gr.update(visible=True),
+            )
+        os.environ["BW_SESSION"] = session
         key = get_api_key(password.strip())
+        groq_key = os.environ.get("GROQ_API_KEY", "")
+        status_parts = []
+        if key:
+            status_parts.append("DeepSeek key loaded")
+        else:
+            status_parts.append("DeepSeek key NOT found in vault")
+        if groq_key:
+            status_parts.append("Groq key loaded")
+        else:
+            status_parts.append("Groq key NOT found in vault")
+        status = "Vault unlocked. " + " | ".join(status_parts) + "."
         if key:
             return (
-                gr.update(value="Vault unlocked. Ready to go.", visible=True),
+                gr.update(value=status, visible=True),
                 gr.update(visible=False),
             )
         return (
-            gr.update(value="Wrong password or vault locked. Try again.", visible=True),
+            gr.update(value=status, visible=True),
             gr.update(visible=True),
         )
 

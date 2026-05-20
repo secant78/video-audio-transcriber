@@ -109,7 +109,8 @@ def _bw_session_valid(session: str) -> bool:
             text=True,
             timeout=10,
         )
-        return result.returncode == 0 and '"status":"unlocked"' in result.stdout
+        # Handle both compact and spaced JSON: "status":"unlocked" or "status": "unlocked"
+        return result.returncode == 0 and "unlocked" in result.stdout
     except Exception:
         return False
 
@@ -129,11 +130,13 @@ def _bw_unlock(password: str = "") -> str:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=30,
+            timeout=60,
         )
+        if result.returncode != 0:
+            print(f"      bw unlock failed (exit {result.returncode}): {result.stderr.strip()[:200]}")
         return result.stdout.strip() if result.returncode == 0 else ""
     except subprocess.TimeoutExpired:
-        print("      Bitwarden unlock timed out after 30s.")
+        print("      Bitwarden unlock timed out after 60s.")
         return ""
     except Exception:
         return ""

@@ -75,7 +75,14 @@ def get_api_key(bw_password: str = "") -> str:
     key = _bw_get_notes("DeepSeek API Key", session)
     if key:
         os.environ["DEEPSEEK_API_KEY"] = key
-        print("      API key loaded from Bitwarden.")
+        print("      DeepSeek API key loaded from Bitwarden.")
+
+    # Also fetch Groq key while vault is open
+    groq_key = _bw_get_notes("Groq API Key", session)
+    if groq_key:
+        os.environ["GROQ_API_KEY"] = groq_key
+        print("      Groq API key loaded from Bitwarden.")
+
     return key
 
 

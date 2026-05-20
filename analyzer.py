@@ -65,8 +65,11 @@ def get_api_key(bw_password: str = "") -> str:
 
     print("Fetching API key from Bitwarden...")
 
+    # Reuse existing session if it is still valid (avoids a slow re-unlock)
     session = os.environ.get("BW_SESSION", "").strip()
-    if not session:
+    if session and _bw_session_valid(session):
+        print("      Reusing existing vault session.")
+    else:
         session = _bw_unlock(bw_password)
         if not session:
             return ""
@@ -89,27 +92,49 @@ def get_api_key(bw_password: str = "") -> str:
 def _bw_available() -> bool:
     """Check if the Bitwarden CLI is installed."""
     try:
-        subprocess.run(["bw", "--version"], capture_output=True, check=True)
+        subprocess.run(["bw", "--version"], capture_output=True, check=True, timeout=5)
         return True
-    except (FileNotFoundError, subprocess.CalledProcessError):
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return False
+
+
+def _bw_session_valid(session: str) -> bool:
+    """Return True if the given session token can already reach the vault."""
+    if not session:
+        return False
+    try:
+        result = subprocess.run(
+            ["bw", "status", "--session", session, "--nointeraction"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.returncode == 0 and '"status":"unlocked"' in result.stdout
+    except Exception:
         return False
 
 
 def _bw_unlock(password: str = "") -> str:
     """Unlock Bitwarden vault and return a session token.
+    Uses --offline so it never syncs with the server (much faster).
     Requires a non-empty password — never opens an interactive terminal prompt.
     """
     if not password or not password.strip():
         return ""
     try:
         result = subprocess.run(
-            ["bw", "unlock", "--raw", "--passwordenv", "BW_PASSWORD"],
+            ["bw", "unlock", "--raw", "--passwordenv", "BW_PASSWORD",
+             "--nointeraction"],
             env={**os.environ, "BW_PASSWORD": password.strip()},
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            timeout=30,
         )
         return result.stdout.strip() if result.returncode == 0 else ""
+    except subprocess.TimeoutExpired:
+        print("      Bitwarden unlock timed out after 30s.")
+        return ""
     except Exception:
         return ""
 
@@ -118,11 +143,16 @@ def _bw_get_notes(item_name: str, session: str) -> str:
     """Retrieve the notes field of a Bitwarden item."""
     try:
         result = subprocess.run(
-            ["bw", "get", "notes", item_name, "--session", session],
+            ["bw", "get", "notes", item_name, "--session", session,
+             "--nointeraction"],
             capture_output=True,
             text=True,
+            timeout=15,
         )
         return result.stdout.strip() if result.returncode == 0 else ""
+    except subprocess.TimeoutExpired:
+        print(f"      Bitwarden get '{item_name}' timed out after 15s.")
+        return ""
     except Exception:
         return ""
 

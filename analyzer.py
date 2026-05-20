@@ -104,7 +104,8 @@ def _bw_session_valid(session: str) -> bool:
         return False
     try:
         result = subprocess.run(
-            ["bw", "status", "--session", session, "--nointeraction"],
+            ["bw", "status", "--nointeraction"],
+            env={**os.environ, "BW_SESSION": session},
             capture_output=True,
             text=True,
             timeout=10,
@@ -146,17 +147,20 @@ def _bw_get_notes(item_name: str, session: str) -> str:
     """Retrieve the notes field of a Bitwarden item."""
     try:
         result = subprocess.run(
-            ["bw", "get", "notes", item_name, "--session", session,
-             "--nointeraction"],
+            ["bw", "get", "notes", item_name, "--nointeraction"],
+            env={**os.environ, "BW_SESSION": session},
             capture_output=True,
             text=True,
             timeout=15,
         )
+        if result.returncode != 0:
+            print(f"      bw get notes '{item_name}' failed (exit {result.returncode}): {result.stderr.strip()[:200]}")
         return result.stdout.strip() if result.returncode == 0 else ""
     except subprocess.TimeoutExpired:
         print(f"      Bitwarden get '{item_name}' timed out after 15s.")
         return ""
-    except Exception:
+    except Exception as e:
+        print(f"      Bitwarden get '{item_name}' exception: {e}")
         return ""
 
 

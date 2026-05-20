@@ -75,6 +75,19 @@ def get_api_key(bw_password: str = "") -> str:
             return ""
         os.environ["BW_SESSION"] = session
 
+    # Sync vault to pull any items added/changed since last local cache update
+    print("      Syncing vault...")
+    try:
+        subprocess.run(
+            ["bw", "sync", "--nointeraction"],
+            env={**os.environ, "BW_SESSION": session},
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception as e:
+        print(f"      Vault sync warning (continuing): {e}")
+
     key = _bw_get_notes("DeepSeek API Key", session)
     if key:
         os.environ["DEEPSEEK_API_KEY"] = key

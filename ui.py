@@ -27,6 +27,9 @@ from analyzer import (
     transcribe_with_groq,
     ANALYSIS_PROMPT,
     _fmt_time,
+    _bw_available,
+    _bw_unlock,
+    _bw_get_notes,
 )
 
 
@@ -291,40 +294,64 @@ with gr.Blocks(title="Transcript Analyzer") as app:
         unlock_btn = gr.Button("Unlock Vault", variant="primary", scale=1)
 
     def unlock_vault(password):
-        """Fetch all API keys from Bitwarden and populate fields."""
-        from analyzer import _bw_available, _bw_session_valid, _bw_unlock
+        """Unlock Bitwarden and fetch all API keys directly."""
         if not password or not password.strip():
             return (
                 gr.update(value="Please enter your Bitwarden master password.", visible=True),
                 gr.update(visible=True),
             )
-        # Check if bw CLI is present
         if not _bw_available():
             return (
-                gr.update(value="Bitwarden CLI not found. Install it or set DEEPSEEK_API_KEY directly.", visible=True),
+                gr.update(value="Bitwarden CLI not found. Set DEEPSEEK_API_KEY env var instead.", visible=True),
                 gr.update(visible=True),
             )
-        # Try unlock (takes ~18s due to key derivation)
+
+        # Step 1: unlock vault
+        print("Unlocking vault...")
         session = _bw_unlock(password.strip())
         if not session:
             return (
-                gr.update(value="Unlock failed — wrong password or vault timed out. Check the terminal for details.", visible=True),
+                gr.update(value="Unlock failed — wrong password or timed out. Check the terminal.", visible=True),
                 gr.update(visible=True),
             )
-        os.environ["BW_SESSION"] = session
-        key = get_api_key(password.strip())
-        groq_key = os.environ.get("GROQ_API_KEY", "")
-        status_parts = []
-        if key:
-            status_parts.append("DeepSeek key loaded")
-        else:
-            status_parts.append("DeepSeek key NOT found in vault")
+        print(f"      Session obtained (length {len(session)}).")
+
+        # Step 2: sync so local cache is up to date
+        print("      Syncing vault...")
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["bw", "sync", "--nointeraction"],
+                env={**os.environ, "BW_SESSION": session},
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                print(f"      Sync warning: {result.stderr.strip()[:200]}")
+            else:
+                print("      Sync complete.")
+        except Exception as e:
+            print(f"      Sync skipped: {e}")
+
+        # Step 3: fetch keys using the session directly
+        print("      Fetching DeepSeek API key...")
+        deepseek_key = _bw_get_notes("DeepSeek API Key", session)
+        print("      Fetching Groq API key...")
+        groq_key = _bw_get_notes("Groq API Key", session)
+
+        # Store in environment for the rest of the session
+        if deepseek_key:
+            os.environ["DEEPSEEK_API_KEY"] = deepseek_key
         if groq_key:
-            status_parts.append("Groq key loaded")
-        else:
-            status_parts.append("Groq key NOT found in vault")
+            os.environ["GROQ_API_KEY"] = groq_key
+        os.environ["BW_SESSION"] = session
+
+        status_parts = []
+        status_parts.append("DeepSeek key loaded" if deepseek_key else "DeepSeek key NOT found")
+        status_parts.append("Groq key loaded" if groq_key else "Groq key NOT found")
         status = "Vault unlocked. " + " | ".join(status_parts) + "."
-        if key:
+        print(f"      {status}")
+
+        if deepseek_key:
             return (
                 gr.update(value=status, visible=True),
                 gr.update(visible=False),
